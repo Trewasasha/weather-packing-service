@@ -1,7 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    # Настройки из ТЗ
+    # Настройки
     MONGODB_URL: str = "mongodb://localhost:27017"
     MONGODB_DB_NAME: str = "weather_service"
 
@@ -13,7 +13,11 @@ class Settings(BaseSettings):
 
     CACHE_TTL_HOURS: int = 24
 
+    # Добавляем новые настройки
+    APP_ENV: str = "development"
+    LOG_LEVEL: str = "INFO"
+
     # Чтение из .env файла
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
 settings = Settings()
