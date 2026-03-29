@@ -5,33 +5,40 @@ from app.services.cities_client import CitiesClient
 from app.services.weather_client import WeatherClient
 from app.services.advice_engine import AdviceEngine
 from app.repositories.cache_repository import CacheRepository
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
 async def get_cities_client():
+    """Dependency для получения клиента Cities API"""
     client = CitiesClient()
     try:
         yield client
     finally:
         await client.close()
 
+
 async def get_weather_client():
+    """Dependency для получения клиента Weather API"""
     client = WeatherClient()
     try:
         yield client
     finally:
         await client.close()
 
+
 async def get_cache_repository():
+    """Dependency для получения репозитория кэша"""
     repo = CacheRepository()
     await repo.initialize()
     try:
         yield repo
     finally:
         await repo.close()
+
 
 @router.post("/packing-advice", response_model=PackingResponse)
 async def get_packing_advice(
@@ -40,6 +47,7 @@ async def get_packing_advice(
         weather_client: WeatherClient = Depends(get_weather_client),
         cache_repo: CacheRepository = Depends(get_cache_repository)
 ):
+
 
     try:
         # Проверяем кэш
@@ -68,6 +76,7 @@ async def get_packing_advice(
         start_date = request.arrival_date
         end_date = request.return_date if request.return_date else request.arrival_date
 
+        # Получаем прогноз погоды
         weather_data = await weather_client.get_forecast(
             city_info["latitude"],
             city_info["longitude"],
@@ -81,11 +90,22 @@ async def get_packing_advice(
                 detail="Не удалось получить данные о погоде"
             )
 
+        # Анализируем погоду
         engine = AdviceEngine()
-        weather_summary = engine.analyze_weather(weather_data)
 
+        try:
+            weather_summary = engine.analyze_weather(weather_data)
+        except ValueError as e:
+            logger.error(f"Ошибка валидации данных погоды: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Некорректные данные о погоде от внешнего сервиса"
+            )
+
+        # Генерируем советы
         packing_advice = engine.generate_packing_advice(weather_summary)
 
+        # Формируем ответ
         response = PackingResponse(
             airport_code=request.airport_code,
             city=city_info["city"],
@@ -97,19 +117,27 @@ async def get_packing_advice(
             weather_summary=WeatherSummary(**weather_summary),
             packing_advice=PackingAdvice(**packing_advice),
             cached=False,
-            generated_at=datetime.utcnow()
+            generated_at=datetime.now(timezone.utc)
         )
 
-        response_dict = response.model_dump()
-        await cache_repo.save_advice(
-            request.airport_code,
-            arrival_str,
-            return_str,
-            city_info,
-            weather_data,
-            response_dict
-        )
+        # Преобразуем в словарь для сохранения в кэш (mode='json' преобразует даты в строки)
+        response_dict = response.model_dump(mode='json')
 
+        # Сохраняем в кэш (ошибки не должны прерывать выполнение)
+        try:
+            await cache_repo.save_advice(
+                request.airport_code,
+                arrival_str,
+                return_str,
+                city_info,
+                weather_data,
+                response_dict
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении в кэш: {e}")
+            # Не пробрасываем исключение, просто логируем
+
+        logger.info(f"Успешно сгенерирован совет для {request.airport_code}")
         return response
 
     except HTTPException:
@@ -120,6 +148,7 @@ async def get_packing_advice(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Внешний сервис временно недоступен"
         )
+
 
 @router.get("/cache/{airport_code}")
 async def get_cache_by_airport(
@@ -133,6 +162,7 @@ async def get_cache_by_airport(
         "cache_entries": cache_entries,
         "count": len(cache_entries)
     }
+
 
 @router.delete("/cache/{airport_code}")
 async def delete_cache_by_airport(
